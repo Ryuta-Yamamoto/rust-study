@@ -113,17 +113,37 @@ fn argmax<T: std::cmp::PartialOrd>(v: &Vec<T>) -> Option<usize> {
 trait Algorithm {
     fn select(&self) -> usize;
     fn obtain(&mut self, reward: f64, idx: usize);
+    fn get_histories(&self) -> &Vec<Vec<f64>>;
+    fn calc_score(&self) -> f64 {
+        let hist = self.get_histories();
+        hist.iter().map(|x| x.iter().sum::<f64>()).collect::<Vec<f64>>().iter().sum::<f64>()
+    }
 }
 
-struct RandomPolicy {n_arms: usize}
+struct RandomPolicy {
+    n_slots: usize,
+    histories: Vec<Vec<f64>>
+}
 
-impl RandomPolicy {fn new(n_arms: usize) -> RandomPolicy {RandomPolicy{n_arms}}}
+impl RandomPolicy {
+    fn new(n_slots: usize) -> RandomPolicy {
+        RandomPolicy{
+            n_slots,
+            histories: vec![vec![]; n_slots]
+        }
+    }
+}
 
 impl Algorithm for RandomPolicy {
     fn select(&self) -> usize {
-        rand::random::<usize>() % self.n_arms
+        rand::random::<usize>() % self.n_slots
     }
-    fn obtain(&mut self, reward: f64, idx: usize) {}
+    fn obtain(&mut self, reward: f64, idx: usize) {
+        self.histories[idx].push(reward);
+    }
+    fn get_histories(&self) -> &Vec<Vec<f64>> {
+        &self.histories
+    }
 }
 
 struct EpsilonGreedyPolicy {
@@ -153,6 +173,9 @@ impl Algorithm for EpsilonGreedyPolicy {
     }
     fn obtain(&mut self, reward: f64, idx: usize) {
         self.histories[idx].push(reward);
+    }
+    fn get_histories(&self) -> &Vec<Vec<f64>> {
+        &self.histories
     }
 }
 
@@ -191,6 +214,9 @@ impl Algorithm for TSPolicy {
     fn obtain(&mut self, reward: f64, idx: usize) {
         self.histories[idx].push(reward);
     }
+    fn get_histories(&self) -> &Vec<Vec<f64>> {
+        &self.histories
+    }
 }
 
 fn play_and_obrain<T: Algorithm>(casino: &mut Casino, policy: &mut T) {
@@ -216,14 +242,8 @@ fn main() {
         play_and_obrain(&mut casino, &mut ts);
         play_and_obrain(&mut casino, &mut eg);
     }
-    let mut sum: f64 = 0.;
-    for f in ts.histories.iter().flatten() {
-        sum += f;
-    }
-    println!("ts {:?}", sum);
-    sum = 0.;
-    for f in eg.histories.iter().flatten() {
-        sum += f;
-    }
-    println!("eg {:?}", sum);
+
+    println!("rp {}", rp.calc_score());
+    println!("ts {}", ts.calc_score());
+    println!("eg {}", eg.calc_score());
 }
