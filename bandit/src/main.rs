@@ -5,6 +5,42 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, thread_rng};
 
 
+trait Engine {
+    fn play(&mut self) -> f64;
+}
+
+struct BinaryEngine {
+    prob: f64,
+    rng: StdRng,
+}
+
+impl Engine for BinaryEngine {
+    fn play(&mut self) -> f64 {
+        (self.rng.gen::<f64>() < self.prob) as u32 as f64
+    }
+}
+
+trait EngineFactory<T: Engine> {
+    fn gen(&mut self) -> &mut T; 
+    fn hist(&mut self) -> &mut Vec<Box<T>>;
+    fn nth(&mut self, n: usize) -> Option<&mut Box<T>> {
+        self.hist().get_mut(n)
+    }
+}
+
+struct SlotEngineFactory {
+    storage: Vec<Box<dyn Engine>>
+}
+
+impl EngineFactory<BinaryEngine> for SlotEngineFactory {
+    fn hist(&mut self) -> &mut Vec<Box<BinaryEngine>> {
+        self.storage 
+    }
+    fn gen(&mut self) -> &mut BinaryEngine {
+        
+    }
+}
+
 struct SlotMachine<T: Rng> {
     prob: f64,
     rng: T,
