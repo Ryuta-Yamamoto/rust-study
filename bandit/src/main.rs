@@ -1,285 +1,221 @@
-use std::vec::Vec;
+use std::{usize, vec::Vec};
+use std::any::Any;
 use statrs::distribution::Beta;
+use rand::random;
 use rand::distributions::Distribution;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, thread_rng};
 
 
-trait Engine {
+trait Replayable {
+    fn as_any(&self) -> &Any;
+    fn initialize(&mut self);
     fn play(&mut self) -> f64;
+    fn profile(&self) -> f64;
 }
 
-struct BinaryEngine {
+
+#[derive(Debug, Clone)]
+struct BinarySlot {
     prob: f64,
     rng: StdRng,
+    seed: u64,
 }
 
-impl Engine for BinaryEngine {
+impl Replayable for BinarySlot {
+    fn as_any(&self) -> &Any {
+        self
+    }
+    fn initialize(&mut self) {
+        self.rng = StdRng::seed_from_u64(self.seed)
+    }
     fn play(&mut self) -> f64 {
         (self.rng.gen::<f64>() < self.prob) as u32 as f64
     }
-}
-
-trait EngineFactory<T: Engine> {
-    fn gen(&mut self) -> &mut T; 
-    fn hist(&mut self) -> &mut Vec<Box<T>>;
-    fn nth(&mut self, n: usize) -> Option<&mut Box<T>> {
-        self.hist().get_mut(n)
+    fn profile(&self) -> f64 {
+        self.prob
     }
 }
 
-struct SlotEngineFactory {
-    storage: Vec<Box<dyn Engine>>
-}
-
-impl EngineFactory<BinaryEngine> for SlotEngineFactory {
-    fn hist(&mut self) -> &mut Vec<Box<BinaryEngine>> {
-        self.storage 
-    }
-    fn gen(&mut self) -> &mut BinaryEngine {
-        
+impl BinarySlot {
+    fn new() -> BinarySlot {
+        let seed: u64 = random();
+        BinarySlot {
+            prob: random(),
+            rng: StdRng::seed_from_u64(seed),
+            seed: seed
+        }
     }
 }
 
-struct SlotMachine<T: Rng> {
-    prob: f64,
-    rng: T,
-    rewards: Vec<f64>
+trait Factory<T: Replayable> {
+    fn gen(&mut self) -> T; 
 }
 
-impl<StdRng: SeedableRng + Rng> SlotMachine<StdRng> {
-    fn new(num: usize) -> SlotMachine<StdRng> {
+trait Storage<T: Replayable + Clone + 'static> {
+    fn hist(&mut self) -> &Vec<Box<dyn Replayable>>;
+    fn nth(&mut self, n: usize) -> Option<T> {
+        if let Some(val) = self.hist().get(n) {
+            Some(val.as_any().downcast_ref::<T>().unwrap().clone());
+        }
+        None
+    }
+}
+
+struct SlotRepository {
+    storage: Vec<Box<dyn Replayable>>
+}
+
+impl SlotRepository {
+    fn new() -> SlotRepository {
+        SlotRepository{ storage: vec![] }
+    }
+}
+
+impl Factory<BinarySlot> for SlotRepository {
+    fn gen(&mut self) -> BinarySlot {
+        self.storage.push(Box::new(BinarySlot::new()));
+        self.storage.last_mut().unwrap().as_any().downcast_ref::<BinarySlot>().unwrap().clone()
+    }
+}
+
+impl Storage<BinarySlot> for SlotRepository {
+    fn hist(&mut self) -> &Vec<Box<dyn Replayable>> {
+        &mut self.storage
+    }
+    fn nth(&mut self, n: usize) -> Option<BinarySlot> {
+        if let Some(val) = self.storage.get(n) {
+            Some(val.as_any().downcast_ref::<BinarySlot>().unwrap().clone());
+        }
+        None
+    }
+}
+
+struct SlotMachine {
+    slot: Box<dyn Replayable>,
+    rewards: Vec<f64>,
+    repository: SlotRepository,
+}
+
+impl SlotMachine {
+    fn new() -> SlotMachine {
+        let mut repository = SlotRepository::new();
+        let slot = repository.gen();
         SlotMachine {
-            prob: rand::random(),
-            rng: StdRng::seed_from_u64(num as u64),
+            slot: Box::new(slot),
             rewards: vec![],
+            repository
         }
     }
     fn play(&mut self) -> f64 {
-        let reward: f64 = (self.rng.gen::<f64>() < self.prob) as u32 as f64;
-        self.rewards.push(reward);
-        reward
+        let v = self.slot.play();
+        self.rewards.push(v);
+        v
+    }    
+    fn set(&mut self, slot: Box<dyn Replayable>) {
+        self.slot = slot;
     }
-    fn get_prob(&self) -> f64 {
-        self.prob
+    fn reset(&mut self) {
+        self.slot.initialize()
     }
-    fn get_rewards(&self) -> &Vec<f64> {
-        &self.rewards
-    }
-}
-
-
-enum Error {
-    IndexError(String),
-    MaxTrialError,
-}
-
-
-struct Casino {
-    slots: Vec<SlotMachine<StdRng>>,
-    selections: Vec<usize>,
-    rewards: Vec<f64>,
-    max_trial: usize
-}
-
-
-impl Casino {
-    fn new(n_slots: usize, max_trial: usize) -> Casino {
-        let mut slots: Vec<SlotMachine<StdRng>> = vec![];
-        for n in 0..n_slots {
-            slots.push(SlotMachine::new(n));
-        }
-        Casino {
-            slots,
-            selections: vec![],
-            rewards: vec![],
-            max_trial,
-        }
-    }
-    fn play(&mut self, idx: usize) -> Result<f64, Error> {
-        if idx >= self.slots.len() {
-            return Err(Error::IndexError("Index out of range".to_string()))
-        }
-        if self.rewards.len() >= self.max_trial {
-            return Err(Error::MaxTrialError)
-        }
-        let val = self.slots[idx].play();
-        self.selections.push(idx);
-        self.rewards.push(val);
-        Result::Ok(val)
-    }
-    fn play_verbose(&mut self, idx: usize) -> Result<f64, Error> {
-        let res = self.play(idx);
-        match &res {
-            Ok(val) => {
-                println!("play slot {}, got reward {}", idx, val);
+    fn set_nth(&mut self, index: usize) -> Result<(), String> {
+        let new = self.repository.nth(index);
+        match new {
+            Some(slot) => {
+                self.set(Box::new(slot));
+                Ok(())
             }
-            Err(Error::IndexError(val)) => println!("Error ocurred: {}", val),
-            Err(Error::MaxTrialError) => println!("You can't play anymore")
-        }
-        res
-    }
-}
-
-
-fn mean(v: &Vec<f64>) -> Option<f64> {
-    if v.is_empty() {return None}
-    let mut total: f64 = 0.;
-    for val in v.iter() {
-        total += val;
-    }
-    Some(total / v.len() as f64)
-}
-
-
-fn argmax<T: std::cmp::PartialOrd>(v: &Vec<T>) -> Option<usize> {
-    if v.is_empty() {return None}
-    let mut max_idx: usize = 0;
-    let mut max_val = v.iter().next()?;
-    for (i, val) in v.iter().enumerate() {
-        if val > max_val {
-            max_idx = i;
-            max_val = val;
-        }
-    }
-    Some(max_idx)
-}
-
-
-trait Algorithm {
-    fn select(&self) -> usize;
-    fn obtain(&mut self, reward: f64, idx: usize);
-    fn get_histories(&self) -> &Vec<Vec<f64>>;
-    fn calc_score(&self) -> f64 {
-        let hist = self.get_histories();
-        hist.iter().map(|x| x.iter().sum::<f64>()).collect::<Vec<f64>>().iter().sum::<f64>()
-    }
-}
-
-struct RandomPolicy {
-    n_slots: usize,
-    histories: Vec<Vec<f64>>
-}
-
-impl RandomPolicy {
-    fn new(n_slots: usize) -> RandomPolicy {
-        RandomPolicy{
-            n_slots,
-            histories: vec![vec![]; n_slots]
+            None => Err("Index out of range".to_string())
         }
     }
 }
 
-impl Algorithm for RandomPolicy {
-    fn select(&self) -> usize {
-        rand::random::<usize>() % self.n_slots
-    }
-    fn obtain(&mut self, reward: f64, idx: usize) {
-        self.histories[idx].push(reward);
-    }
-    fn get_histories(&self) -> &Vec<Vec<f64>> {
-        &self.histories
-    }
+enum State {
+    End,
+    Playing { cnt: usize, max: Option<usize>},
 }
 
-struct EpsilonGreedyPolicy {
-    epsilon: f64,
-    histories: Vec<Vec<f64>>
-}
-
-impl EpsilonGreedyPolicy {
-    fn new(epsilon: f64, n_slots: usize) -> Result<EpsilonGreedyPolicy, String> {
-        if epsilon > 1.0 || epsilon < 0. {
-            return Err("epsilon must be between 0 and 1".to_string())
-        }
-        Ok(EpsilonGreedyPolicy {
-            epsilon,    
-            histories: vec![vec![]; n_slots]
-        })
+impl State {
+    fn new(n_games: Option<usize>) -> State {
+        match n_games {                
+            Some(n @ 1..=usize::MAX) => State::Playing { cnt: 0, max: Some(n) },
+            Some(_) => State::End,
+            None => State::Playing { cnt: 0, max: None }
+        } 
     }
-}
-
-impl Algorithm for EpsilonGreedyPolicy {
-    fn select(&self) -> usize {
-        if rand::random::<f64>() < self.epsilon{
-            return rand::random::<usize>() % self.histories.len()
-        }
-        let means: Vec<f64> = self.histories.iter().map(|x| mean(x).unwrap_or_else(|| 1.)).collect();
-        argmax(&means).unwrap()
-    }
-    fn obtain(&mut self, reward: f64, idx: usize) {
-        self.histories[idx].push(reward);
-    }
-    fn get_histories(&self) -> &Vec<Vec<f64>> {
-        &self.histories
-    }
-}
-
-
-struct TSPolicy {
-    alpha: f64,
-    beta: f64,
-    histories: Vec<Vec<f64>>
-}
-
-impl TSPolicy {
-    fn new(alpha: f64, beta: f64, n_slots: usize) -> Result<TSPolicy, String> {
-        if alpha <= 0. || beta <= 0. {
-            return Err("alpha and beta must be >0".to_string())
-        }
-        Ok(TSPolicy{
-            alpha, 
-            beta,
-            histories: vec![vec![]; n_slots]
-        })
-    }
-}
-
-
-impl Algorithm for TSPolicy {
-    fn select(&self) -> usize {
-        let samples = self.histories.iter().map(
-            |v| {
-                let a = v.iter().sum::<f64>() + &self.alpha;
-                let b = v.len() as f64 - v.iter().sum::<f64>() + &self.beta;
-                Beta::new(a, b).unwrap().sample(&mut thread_rng())
+    fn play(&self) -> State {
+        match *self {
+            State::Playing {cnt, max: Some(max)} => {
+                if cnt < max {
+                    State::Playing { cnt: cnt + 1, max: Some(max)}
+                } else { State::End }
             }
-        ).collect();
-        argmax(&samples).unwrap()
-    }
-    fn obtain(&mut self, reward: f64, idx: usize) {
-        self.histories[idx].push(reward);
-    }
-    fn get_histories(&self) -> &Vec<Vec<f64>> {
-        &self.histories
+            State::Playing { cnt, max: None } => State::Playing { cnt, max: None },
+            _ => panic!()
+        }
     }
 }
 
-fn play_and_obrain<T: Algorithm>(casino: &mut Casino, policy: &mut T) {
-    let idx = policy.select();
-    if let Ok(reward) = casino.play(idx) {
-        policy.obtain(reward, idx);
-    } else {
-        panic!();
+struct Game {
+    slot_machines: Vec<SlotMachine>,
+    state: State,
+    scores: Vec<f64>
+}
+
+impl Game {
+    fn new(n_machines: usize) -> Game {
+        let mut slot_machines = Vec::with_capacity(n_machines);
+        for _ in 0..n_machines {
+            slot_machines.push(SlotMachine::new())
+        }
+        Game {
+            slot_machines,
+            state: State::End,
+            scores: Vec::new(),
+        }
+    }
+    fn start(&mut self, n_games: Option<usize>) {
+        self.state = State::new(n_games)
+    }
+    fn play(&mut self, index: usize) -> Result<f64, String> {
+        let max_index = self.slot_machines.len();
+        if let State::End = self.state {
+            return Err("A game is not started. Please start a game.".to_string())
+        }
+        match self.slot_machines.get_mut(index) {
+            Some(slot) => {
+                let state = self.state.play();
+                let reword = slot.play();
+                self.scores.push(reword);
+                Ok(reword)
+            }
+            None => Err("Index out of range.".to_string())
+        }
+    }
+    fn score(&self) -> f64 {
+        self.scores.iter().sum()
+    }
+    fn profiles(&self) -> Vec<f64> {
+        self.slot_machines.iter().map(|x| x.slot.profile())
+        .collect::<Vec<f64>>()
     }
 }
 
 
 fn main() {
-    let n_slots: usize = 100;
-    let max_trial = 10000;
-    let mut casino = Casino::new(n_slots, max_trial * 3);
-    let mut rp = RandomPolicy::new(n_slots);
-    let mut ts = TSPolicy::new(1., 1., n_slots).unwrap();
-    let mut eg = EpsilonGreedyPolicy::new(0.05, n_slots).unwrap();
-
-    for _ in 0..max_trial {
-        play_and_obrain(&mut casino, &mut rp);
-        play_and_obrain(&mut casino, &mut ts);
-        play_and_obrain(&mut casino, &mut eg);
+    let mut game = Game::new(10);
+    game.start(None);
+    for _ in 0..100 {
+        game.play(0);
     }
-
-    println!("rp {}", rp.calc_score());
-    println!("ts {}", ts.calc_score());
-    println!("eg {}", eg.calc_score());
+    println!("{}", game.score());
+    for _ in 0..1000 {
+        game.play(1);
+    }
+    println!("{}", game.score());
+    for _ in 0..10000 {
+        game.play(2);
+    }
+    println!("{}", game.score());
+    println!("{:?}", game.profiles());
 }
