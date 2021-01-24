@@ -5,6 +5,8 @@ use rand::random;
 use rand::distributions::Distribution;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, thread_rng};
+
+
 trait Replayable {
     fn as_any(&self) -> &Any;
     fn initialize(&mut self);
@@ -51,7 +53,7 @@ trait Factory<T: Replayable> {
 }
 
 trait Storage<T: Replayable + Clone + 'static> {
-    fn hist(&mut self) -> &Vec<Box<dyn Replayable>>;
+    fn hist(&mut self) -> &Vec<Box<dyn Replayable + Send>>;
     fn nth(&mut self, n: usize) -> Option<T> {
         if let Some(val) = self.hist().get(n) {
             Some(val.as_any().downcast_ref::<T>().unwrap().clone());
@@ -61,7 +63,7 @@ trait Storage<T: Replayable + Clone + 'static> {
 }
 
 struct SlotRepository {
-    storage: Vec<Box<dyn Replayable>>
+    storage: Vec<Box<dyn Replayable + Send>>
 }
 
 impl SlotRepository {
@@ -78,7 +80,7 @@ impl Factory<BinarySlot> for SlotRepository {
 }
 
 impl Storage<BinarySlot> for SlotRepository {
-    fn hist(&mut self) -> &Vec<Box<dyn Replayable>> {
+    fn hist(&mut self) -> &Vec<Box<dyn Replayable + Send>> {
         &mut self.storage
     }
     fn nth(&mut self, n: usize) -> Option<BinarySlot> {
@@ -90,7 +92,7 @@ impl Storage<BinarySlot> for SlotRepository {
 }
 
 struct SlotMachine {
-    slot: Box<dyn Replayable>,
+    slot: Box<dyn Replayable + Send>,
     rewards: Vec<f64>,
     repository: SlotRepository,
 }
@@ -110,7 +112,7 @@ impl SlotMachine {
         self.rewards.push(v);
         v
     }    
-    fn set(&mut self, slot: Box<dyn Replayable>) {
+    fn set(&mut self, slot: Box<dyn Replayable + Send>) {
         self.slot = slot;
     }
     fn reset(&mut self) {
@@ -173,7 +175,8 @@ impl Game {
         }
     }
     pub fn start(&mut self, n_games: Option<usize>) {
-        self.state = State::new(n_games)
+        self.state = State::new(n_games);
+        self.slot_machines.iter_mut().map(|x| x.reset()).collect::<Vec<()>>();
     }
     pub fn play(&mut self, index: usize) -> Result<f64, String> {
         let max_index = self.slot_machines.len();
@@ -192,6 +195,9 @@ impl Game {
     }
     pub fn score(&self) -> f64 {
         self.scores.iter().sum()
+    }
+    pub fn play_count(&self) -> usize {
+        self.scores.len()
     }
     pub fn profiles(&self) -> Vec<f64> {
         self.slot_machines.iter().map(|x| x.slot.profile())
